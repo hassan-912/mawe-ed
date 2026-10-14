@@ -1,7 +1,10 @@
 import { buildPushPayload } from '@block65/webcrypto-web-push';
 import { sha256 } from './auth.mjs';
 export const pushConfigured = env => !!(env.VAPID_PUBLIC_KEY && env.VAPID_PRIVATE_KEY && env.VAPID_SUBJECT);
-function bytes(value) { if(typeof value!=='string'||!/^[-_a-zA-Z0-9]+$/.test(value))throw new Error('Invalid push encryption key.');return Uint8Array.from(atob(value.replaceAll('-','+').replaceAll('_','/')),c=>c.charCodeAt(0)); }
+function bytes(value) {
+  if(typeof value!=='string'||value.length>128||!/^[-_a-zA-Z0-9]+$/.test(value))throw new Error('Invalid push encryption key.');
+  try{return Uint8Array.from(atob(value.replaceAll('-','+').replaceAll('_','/')),c=>c.charCodeAt(0));}catch{throw new Error('Invalid push encryption key.');}
+}
 export async function validateSubscription(input) {
   if(typeof input.endpoint!=='string'||input.endpoint.length>2048)throw new Error('Invalid push endpoint.');
   let url;try{url=new URL(input.endpoint);}catch{throw new Error('Invalid push endpoint.');}
@@ -13,11 +16,11 @@ export async function validateSubscription(input) {
   try{await crypto.subtle.importKey('raw',publicKey,{name:'ECDH',namedCurve:'P-256'},false,[]);}catch{throw new Error('Invalid push encryption key.');}
   return {endpoint:url.href,expirationTime:null,keys:{p256dh:input.keys.p256dh,auth:input.keys.auth}};
 }
-export async function saveSubscription(DB,userId,input,now=new Date()) {
+export async function saveSubscription(DB,userId,input,now=new Date(),authVersion=0) {
   const subscription=await validateSubscription(input),id=await sha256(subscription.endpoint);
   const existing=await DB.prepare('SELECT user_id FROM push_subscriptions WHERE id=?').bind(id).first();
   if(existing&&existing.user_id!==userId)throw new Error('This browser belongs to another staff account. Sign out of that account and turn off its notifications first.');
-  const result=await DB.prepare('INSERT INTO push_subscriptions(id,user_id,endpoint,subscription,created_at) SELECT ?,?,?,?,? WHERE (SELECT COUNT(*) FROM push_subscriptions WHERE user_id=?)<3 OR EXISTS(SELECT 1 FROM push_subscriptions WHERE id=? AND user_id=?) ON CONFLICT(id) DO UPDATE SET subscription=excluded.subscription WHERE push_subscriptions.user_id=excluded.user_id').bind(id,userId,subscription.endpoint,JSON.stringify(subscription),now.toISOString(),userId,id,userId).run();
+  const result=await DB.prepare("INSERT INTO push_subscriptions(id,user_id,endpoint,subscription,created_at) SELECT ?,?,?,?,? WHERE ((SELECT COUNT(*) FROM push_subscriptions WHERE user_id=?)<3 OR EXISTS(SELECT 1 FROM push_subscriptions WHERE id=? AND user_id=?)) AND EXISTS(SELECT 1 FROM users WHERE id=? AND status='active' AND must_change_password=0 AND auth_version=?) ON CONFLICT(id) DO UPDATE SET subscription=excluded.subscription WHERE push_subscriptions.user_id=excluded.user_id").bind(id,userId,subscription.endpoint,JSON.stringify(subscription),now.toISOString(),userId,id,userId,userId,authVersion).run();
   if(!result.meta.changes)throw new Error('Up to three devices can receive reminders per account. Turn off an old device first.');
   await DB.prepare("UPDATE deliveries SET attempts=0,available_at=0 WHERE owner_id=? AND status='failed' AND error='No notification device connected'").bind(userId).run();
   return id;

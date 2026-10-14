@@ -2,6 +2,10 @@ node_modules/
 .wrangler/
 .dev.vars
 push-secrets.json
+auth-secrets.json
+.env
+.env.local
+*.secret.sql
 *.log
 bootstrap-manager.sql
 *.tar.gz

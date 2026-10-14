@@ -1,13 +1,28 @@
-# Maw‘id — موعد
+# Maw‘id
 
 **A little ahead, always.** A light, calm reminder workspace for company consultations, visa preparation, everyday tasks, and exceptional tasks. Built with ivory, sage, and restrained terracotta. The existing MG company logo is preserved; the new bell/check mark identifies the reminder app.
 
 ## What is ready
 
 - An interactive, responsive demo with sample clients. Both portals can be explored without signing in. Demo changes stay in the browser and do not send messages.
-- A separate Cloudflare Workers/D1 backend with account login, server-enforced roles, assigned records, encrypted browser push, and scheduled reminders.
+- A Cloudflare Workers/D1 backend with registration, manager-approved employee membership, login, account security controls, assigned records, encrypted browser push, and scheduled reminders.
+- Three planned additions: **Today’s priorities**, **consultation-to-employee-case handoff**, and **activity history**.
 - An installable PWA manifest, phone icons, and a service worker that handles incoming pushes even when the tab is closed.
 - Deployment instructions below. Real hosting/database/phone delivery are **not activated** by opening the static demo.
+
+Read the [feature plan](docs/FEATURE_PLAN.md), [security review](docs/SECURITY_REVIEW.md), and [delivery report](docs/DELIVERY_REPORT.md). The feature plan was committed before implementation. The review documents confirmed fixes and remaining limits; it is not a claim that every possible vulnerability has been eliminated.
+
+![English workspace preview](docs/mawid-dashboard.jpg)
+
+## Accounts and the new workflows
+
+Staff can choose **Create an account** and sign in with their email and password. New accounts start as pending employees, with no company-data access. A manager must verify the real staff member and approve membership in **Settings & team**. Registration does not verify email ownership or allow someone to make themselves a manager. Pending users can inspect their account security and approval state.
+
+Managers can also create staff accounts directly. Those staff must replace their initial password before company records become available. **Account security** supports password changes, viewing/revoking sessions, disconnecting notification devices, and hiding client details in phone previews. Password changes disconnect other sessions and all push devices; reconnect notifications afterward. Pausing employee access revokes sessions and stops their reminders. New passwords require 15–128 characters.
+
+- **Today’s priorities** brings incomplete preparation, follow-ups, and tasks into an ordered view. Each record can have Normal, High, or Urgent priority. The dates follow Cairo time and employees see assigned work only.
+- **Hand off to employee** creates one case from a consultation, assigns an active employee, calculates the preparation deadline, and stops repeating consultation reminders in one transaction. Retrying does not create duplicate cases. Manager notes stay in the consultation; the form provides a separate employee note.
+- **Activity history** shows successful checklist, deadline, assignment, status, and account changes with the actor and Cairo time. Employees see history for currently assigned records plus their own account events. Managers oversee the company. Audit summaries exclude passwords, tokens, device endpoints, and free-form notes.
 
 ## Recommended free stack
 
@@ -93,16 +108,18 @@ Run these from this project directory. The `.openai/hosting.json` file belongs t
 
 2. Copy the returned `database_id` into `wrangler.jsonc`, replacing `REPLACE_WITH_YOUR_D1_DATABASE_ID`.
 
-3. Initialize the remote database and create your first manager:
+3. Generate and upload the account security key, then initialize the remote database and create your first manager:
 
    ```powershell
+   npm run auth:key
+   npx wrangler secret bulk auth-secrets.json
    npm run db:remote
    npm run create-manager
    npx wrangler d1 execute mawid --remote --file bootstrap-manager.sql
    Remove-Item -LiteralPath .\bootstrap-manager.sql
    ```
 
-   The helper prompts for the manager’s name, email, and password. Password input is hidden. The SQL contains a salted password hash, not the password. Use the manager’s real email as the account identifier; this app does not send an email invitation.
+   The helper prompts for the manager’s name, email, and password. Password input is hidden. The SQL contains a salted, pepper-protected password hash. Use a unique password of at least 15 characters. Keep `auth-secrets.json` and `.dev.vars` private and backed up; they are ignored by Git. Losing or replacing `AUTH_PEPPER` makes upgraded passwords unverifiable. The app does not send email invitations or password-reset emails.
 
 4. Deploy the application:
 
@@ -121,7 +138,7 @@ Run these from this project directory. The `.openai/hosting.json` file belongs t
 
    Enter your administrator email for the VAPID contact. Keep `push-secrets.json` and `.dev.vars` private; both are ignored by Git. The private key is a server secret. The public key is intentionally returned to signed-in browsers through `/api/config`. The key helper refuses to overwrite existing keys. Preserve the keys; changing them requires staff to subscribe again.
 
-6. Sign in as the manager, use **Settings & team → Add staff member**, and share each initial login privately. Staff can then sign in to their own portal.
+6. Sign in as the manager. Staff may register themselves and then wait for approval in **Settings & team**. Verify their real identity before approval because emails are not automatically verified. Alternatively use **Add staff member** and share an initial login privately; the employee must change that initial password before accessing company records.
 
 7. On each staff phone, open/install the app and tap **Settings & team → Enable on this device**, then approve the browser/OS notification prompt. Each account supports up to three devices. Signing out turns off notifications on that browser; other subscribed phones remain connected.
 
@@ -134,9 +151,9 @@ npm test
 npx wrangler deploy --dry-run
 ```
 
-28 tests passed, covering exact checklists, deadline calculations, Cairo daylight-saving changes, permissions, optimistic concurrency, encrypted push/decryption, subscription ownership, endpoint restrictions, idempotent slots, retries, and the service-worker notification handler without an open page.
+55 tests passed, covering reminder calculations, Cairo daylight-saving changes, account approval and role boundaries, peppered credentials, session revocation and limits, cross-origin/body validation, reassignment privacy, handoff transactions, history consistency, encrypted push/decryption, private previews, blocked reminders for inactive accounts, and cleanup without push configuration. `npm audit --audit-level=high` found zero reported dependency vulnerabilities. The pinned GitHub Actions workflow repeats tests, dependency auditing, and the Worker deployment dry-run.
 
-The actual local Workers/D1 runtime was also checked for login, authenticated reads, creating a case, and saving checklist changes. To repeat that check, start `npm run dev` in one terminal and run `npm run verify:local` in another. That helper creates and removes only its named local test account and records. Do not enable real push keys for a synthetic test account.
+The actual local Workers/D1 runtime was also checked for static security headers, login, authenticated reads, creating a case, checklist changes, activity, and session inspection. To repeat, first run `npm run auth:key` if `.dev.vars` has no account key, start `npm run dev` in one terminal, and run `npm run verify:local` in another. That helper creates and removes only its named local test account and records. Do not enable real push keys for a synthetic test account.
 
 Browser QA included checklist editing and message updates, both portals, date previews, search, and responsive layout. The 375px layout has no page-level horizontal overflow. The supplied Code Reviewer scripts were executed, but their analysis functions are placeholders; their “zero findings” result is not treated as a substantive audit. Manual review and the tests supply the actual verification.
 
@@ -144,7 +161,15 @@ The scheduler checks every five minutes, scans up to six due records, and handle
 
 No notification system can promise exactly-once delivery across a network failure. Saved receipts and notification tags reduce duplicates; an ambiguous failure after a push service accepted a message can still result in a retry. Superseded reminders are cancelled, and missed morning case messages are replaced by the current afternoon slot.
 
-Staff must keep notification permission enabled. An expired subscription requires enabling notifications again. The source is an MVP; account recovery, MFA, detailed administrative audit logs, and more granular organizational permissions are future additions rather than claimed features.
+Staff must keep notification permission enabled. An expired subscription requires enabling notifications again. Email verification, password recovery, MFA, and isolation between unrelated companies remain future additions. Activity is append-only through the API, but database administrators can change it.
+
+The current password derivation uses Workers-compatible PBKDF2 at 100,000 rounds plus a separate server-secret HMAC. This improves protection against a database-only leak, but is below OWASP’s 600,000-round PBKDF2 recommendation. Production CPU time and authentication costs must be measured against the free plan; use managed authentication or a suitable runtime if stronger hashing or dependable public signup capacity is required. See the [security report](docs/SECURITY_REVIEW.md) for details.
+
+### Upgrading an existing installation
+
+Back up the database before upgrading. Apply `npm run db:remote` to an existing schema; migration 0001 uses `IF NOT EXISTS` and migration 0002 adds account state, versioned sessions, handoff links, and history. Generate/upload `AUTH_PEPPER` once before deploying this version. Preserve an existing pepper if one is already configured. Legacy users remain active and their stored hashes upgrade on successful sign-in; existing sessions remain compatible. Do not re-run already-applied migrations manually or edit their SQL. Missing account-secret configuration deliberately blocks registration and login.
+
+All asset requests now pass through the Worker to receive its security headers, so those requests also count against the Worker invocation allowance. [Cloudflare documents this behavior](https://developers.cloudflare.com/workers/static-assets/billing-and-limitations/).
 
 ## Project files
 

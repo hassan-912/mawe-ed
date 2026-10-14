@@ -9,7 +9,7 @@ import { pushFixture } from './push-fixture.mjs';
 async function fixture() {
   const DB=database(),hash=await hashPassword('Test-only-password-123'),push=await pushFixture();
   for(const [id,role]of [['manager','manager'],['employee','employee'],['other','employee']]){DB.raw.prepare('INSERT INTO users(id,name,email,role,password_hash,created_at) VALUES (?,?,?,?,?,?)').run(id,id,`${id}@test.invalid`,role,hash,'2026-10-01T00:00:00Z');const sub={...push.subscription,endpoint:push.subscription.endpoint+'/'+id};DB.raw.prepare('INSERT INTO push_subscriptions(id,user_id,endpoint,subscription,created_at) VALUES (?,?,?,?,?)').run(id,id,sub.endpoint,JSON.stringify(sub),'2026-10-01T00:00:00Z');}
-  return {DB,...push.env,decrypt:push.decrypt};
+  return {DB,AUTH_PEPPER:'a'.repeat(64),...push.env,decrypt:push.decrypt};
 }
 function req(path,method='GET',input,token,origin='https://mawid.test') {return new Request(`https://mawid.test/api/${path}`,{method,headers:{'Content-Type':'application/json',...(method!=='GET'?{Origin:origin}:{}),...(token?{Cookie:token}:{})},...(input?{body:JSON.stringify(input)}:{})});}
 async function login(env,email='employee') {const response=await worker.fetch(req('login','POST',{email:`${email}@test.invalid`,password:'Test-only-password-123'}),env);assert.equal(response.status,200);return response.headers.get('Set-Cookie').split(';')[0];}
@@ -25,5 +25,40 @@ test('scheduler sends once per slot, only remaining documents, and stops when re
 test('failed delivery is logged and retried with the same deduplication key',async()=>{const env=await fixture();try{insert(env,'a','cases',record);let calls=0;const sender=async()=>{calls++;return new Response(null,{status:calls===1?500:201});};await runReminders(env,new Date('2026-10-14T07:30:00Z'),sender);assert.equal(env.DB.raw.prepare('SELECT status FROM deliveries').get().status,'failed');await runReminders(env,new Date('2026-10-14T07:45:00Z'),sender);assert.equal(calls,2);assert.equal(env.DB.raw.prepare('SELECT status FROM deliveries').get().status,'sent');assert.equal(env.DB.raw.prepare('SELECT COUNT(*) AS n FROM deliveries').get().n,1);}finally{env.DB.close();}});
 test('48h and custom consultation intervals repeat without duplicate jobs',async()=>{const env=await fixture();try{const c={name:'Client',ownerId:'manager',consultationDate:'2026-10-10',intervalHours:72,nextReminder:'2026-10-14T07:30:00Z',status:'active'};insert(env,'c','consultations',c);let sent=0;const sender=async()=>{sent++;return new Response(null,{status:201});};await runReminders(env,new Date('2026-10-14T07:30:00Z'),sender);await runReminders(env,new Date('2026-10-14T07:30:00Z'),sender);assert.equal(sent,1);assert.equal(env.DB.raw.prepare('SELECT next_due FROM records').get().next_due,'2026-10-17T07:30:00.000Z');}finally{env.DB.close();}});
 test('no phone messages are attempted without push key configuration',async()=>{const env=await fixture();try{delete env.VAPID_PRIVATE_KEY;insert(env,'a','cases',record);const result=await runReminders(env,new Date('2026-10-14T07:30:00Z'),()=>{throw new Error('Unexpected send');});assert.equal(result.configured,false);assert.equal(env.DB.raw.prepare('SELECT COUNT(*) AS n FROM deliveries').get().n,0);}finally{env.DB.close();}});
+
+test('expired authentication state is cleaned even when phone push has not been configured',async()=>{
+  const env=await fixture();try{
+    delete env.VAPID_PRIVATE_KEY;
+    env.DB.raw.prepare("INSERT INTO sessions(token_hash,user_id,expires_at,public_id) VALUES ('expired','employee',0,?)").run(crypto.randomUUID());
+    env.DB.raw.prepare("INSERT INTO login_limits(key,attempts,expires_at) VALUES ('expired',1,0),('current',1,9999999999999)").run();
+    await runReminders(env,new Date('2026-10-14T00:00:00Z'),()=>{throw new Error('Unexpected send');});
+    assert.equal(env.DB.raw.prepare('SELECT COUNT(*) AS n FROM sessions').get().n,0);assert.equal(env.DB.raw.prepare('SELECT key FROM login_limits').get().key,'current');
+  }finally{env.DB.close();}
+});
+
+test('private notification previews hide client identifiers and free-form notes never leave through push',async()=>{
+  const env=await fixture();try{
+    insert(env,'private','tasks',{name:'Sensitive client label',ownerId:'employee',dueDate:'2026-10-14',time:'10:30',recurrence:'once',notes:'Secret free-form notes'});
+    env.DB.raw.prepare("UPDATE users SET notification_preview=0 WHERE id='employee'").run();
+    const sent=[];await runReminders(env,new Date('2026-10-14T07:30:00Z'),async(url,options)=>{sent.push(await env.decrypt(options.body));return new Response(null,{status:201});});
+    assert.equal(sent.length,1);assert.equal(sent[0].title,'Maw‘id · Reminder due');assert.doesNotMatch(JSON.stringify(sent[0]),/Sensitive client|Secret free-form/);
+    env.DB.raw.prepare("UPDATE users SET notification_preview=1 WHERE id='employee'").run();
+    insert(env,'visible','tasks',{name:'Visible task',ownerId:'employee',dueDate:'2026-10-14',time:'10:30',recurrence:'once',notes:'Secret free-form notes'});
+    await runReminders(env,new Date('2026-10-14T07:30:00Z'),async(url,options)=>{sent.push(await env.decrypt(options.body));return new Response(null,{status:201});});
+    assert.match(sent[1].body,/Visible task/);assert.doesNotMatch(sent[1].body,/Secret free-form/);
+  }finally{env.DB.close();}
+});
+
+test('paused, pending, and initial-password accounts never receive queued reminders',async()=>{
+  for(const [status,mustChange] of [['disabled',0],['pending',0],['active',1]]){
+    const env=await fixture();try{
+      insert(env,'a','cases',record);
+      env.DB.raw.prepare('UPDATE users SET status=?,must_change_password=? WHERE id=?').run(status,mustChange,'employee');
+      env.DB.raw.prepare("INSERT INTO deliveries(id,dedup_key,record_id,owner_id,title,message,status,created_at) VALUES ('queued','a:case:2026-10-14:10:30','a','employee','Private title','Private message','pending','2026-10-14T07:30:00Z')").run();
+      await runReminders(env,new Date('2026-10-14T07:30:00Z'),()=>{throw new Error('Inactive owner must not receive a notification');});
+      assert.equal(env.DB.raw.prepare('SELECT status FROM deliveries').get().status,'cancelled');
+    }finally{env.DB.close();}
+  }
+});
 test('daily tasks started earlier are not queued before their wall-clock time',async()=>{const env=await fixture();try{insert(env,'daily','tasks',{name:'Daily review',ownerId:'employee',dueDate:'2026-10-10',time:'10:30',recurrence:'daily'});let calls=0;const sender=async()=>{calls++;return new Response(null,{status:201});};await runReminders(env,new Date('2026-10-14T06:00:00Z'),sender);assert.equal(calls,0);assert.equal(env.DB.raw.prepare('SELECT last_scan FROM records').get().last_scan,null);await runReminders(env,new Date('2026-10-14T07:30:00Z'),sender);assert.equal(calls,1);await runReminders(env,new Date('2026-10-14T08:00:00Z'),sender);assert.equal(calls,1);await runReminders(env,new Date('2026-10-15T07:30:00Z'),sender);assert.equal(calls,2);}finally{env.DB.close();}});
 test('one-off tasks are queued once and completed case slots do not consume repeated scans',async()=>{const env=await fixture();try{insert(env,'one','tasks',{name:'One-off',ownerId:'employee',dueDate:'2026-10-14',time:'10:30',recurrence:'once',doneOn:''});let calls=0;const sender=async()=>{calls++;return new Response(null,{status:201});};await runReminders(env,new Date('2026-10-14T07:30:00Z'),sender);const before=env.DB.raw.prepare('SELECT last_scan FROM records').get().last_scan;await runReminders(env,new Date('2026-10-15T07:30:00Z'),sender);assert.equal(calls,1);assert.equal(env.DB.raw.prepare('SELECT last_scan FROM records').get().last_scan,before);}finally{env.DB.close();}});

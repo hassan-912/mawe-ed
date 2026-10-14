@@ -7,10 +7,11 @@
     "preview": "node scripts/preview.mjs",
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
-    "db:local": "wrangler d1 execute mawid --local --file server/schema.sql",
-    "db:remote": "wrangler d1 execute mawid --remote --file server/schema.sql",
+    "db:local": "wrangler d1 migrations apply mawid --local",
+    "db:remote": "wrangler d1 migrations apply mawid --remote",
     "create-manager": "node scripts/create-manager.mjs",
     "push:keys": "node scripts/generate-push-keys.mjs",
+    "auth:key": "node scripts/generate-auth-key.mjs",
     "brand": "node scripts/render-brand.mjs",
     "verify:local": "node scripts/verify-worker.mjs"
   },

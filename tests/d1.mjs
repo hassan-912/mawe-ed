@@ -2,6 +2,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { readFileSync } from 'node:fs';
 export function database() {
   const db=new DatabaseSync(':memory:');db.exec(readFileSync(new URL('../server/schema.sql',import.meta.url),'utf8'));
+  db.exec(readFileSync(new URL('../server/migrations/0002_accounts_and_history.sql',import.meta.url),'utf8'));
   return {
     raw:db,
     prepare(sql) {

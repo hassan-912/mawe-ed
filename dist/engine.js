@@ -12,7 +12,7 @@ export function localParts(now = new Date(), zone = ZONE) {
 }
 export const today = () => localParts().date;
 export function validDate(value) {
-  return typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value) && !Number.isNaN(Date.parse(value)) && new Date(`${value}T12:00:00Z`).toISOString().slice(0, 10) === value;
+  return typeof value === 'string' && /^(19|20|21)\d{2}-\d{2}-\d{2}$/.test(value) && !Number.isNaN(Date.parse(value)) && new Date(`${value}T12:00:00Z`).toISOString().slice(0, 10) === value;
 }
 export function addDays(date, amount) {
   if (!validDate(date)) throw new Error('Enter a valid date.');
@@ -67,11 +67,14 @@ export function validateRecord(type, input, existing = {}) {
   const r = { ...existing, ...input };
   const string = (key, max = 160) => { if (typeof r[key] !== 'string' || !r[key].trim() || r[key].length > max) throw new Error(`Enter a valid ${key}.`); r[key] = r[key].trim(); };
   string('name'); string('ownerId', 80);
+  r.priority = r.priority ?? 'normal';
+  if (!['normal','high','urgent'].includes(r.priority)) throw new Error('Choose a valid priority.');
   if (r.notes != null && (typeof r.notes !== 'string' || r.notes.length > 3000)) throw new Error('Notes must be under 3,000 characters.');
   if (r.phone != null && (typeof r.phone !== 'string' || r.phone.length > 40)) throw new Error('Enter a valid phone number.');
   if (r.archived != null && typeof r.archived !== 'boolean') throw new Error('Invalid archive state.');
   if (type === 'cases') {
     if (!Object.hasOwn(CHECKLISTS,r.kind) || !validDate(r.appointment)) throw new Error('Choose a destination and valid appointment date.');
+    if (r.reminderStart != null && typeof r.reminderStart !== 'string') throw new Error('Enter a valid reminder start.');
     if (r.reminderStart && (!validDate(r.reminderStart) || r.reminderStart > readyBy(r))) throw new Error('Reminders must start on or before the preparation deadline.');
     if (r.checks != null && (typeof r.checks !== 'object' || Array.isArray(r.checks))) throw new Error('Invalid checklist.');
     const allowed = CHECKLISTS[r.kind];
@@ -85,8 +88,31 @@ export function validateRecord(type, input, existing = {}) {
     if (r.destination != null && (typeof r.destination !== 'string' || r.destination.length > 160)) throw new Error('Enter a valid destination.');
   } else if (type === 'tasks') {
     if (!['daily', 'once'].includes(r.recurrence) || !validDate(r.dueDate) || !/^([01]\d|2[0-3]):[0-5]\d$/.test(r.time)) throw new Error('Choose a valid task schedule.');
+    if (r.doneOn != null && typeof r.doneOn !== 'string') throw new Error('Invalid completion date.');
     if (r.doneOn && !validDate(r.doneOn)) throw new Error('Invalid completion date.');
     r.doneOn = r.doneOn || '';
   } else throw new Error('Unknown record type.');
   return r;
+}
+export function buildPriorities(workspace,now=new Date()) {
+  const {date,time}=localParts(now),items=[];
+  const priorityWeight={urgent:0,high:1,normal:2};
+  for(const r of workspace.cases||[]) {
+    if(r.archived||isPlaceholder(r)||!pendingItems(r).length)continue;
+    const due=readyBy(r),days=daysBetween(date,due);
+    if(days>7&&r.priority!=='urgent')continue;
+    items.push({type:'cases',id:r.id,name:r.name,priority:r.priority||'normal',dueDate:due,rank:days<0?0:days===0?1:3,description:days<0?`Preparation ${-days} day(s) overdue`:days===0?'Preparation due today':`Prepare within ${days} day(s)`,missing:pendingItems(r)});
+  }
+  for(const r of workspace.consultations||[]) {
+    if(r.archived||r.status!=='active')continue;
+    const due=localParts(new Date(r.nextReminder)).date,isDue=Date.parse(r.nextReminder)<=now.getTime();
+    if(!isDue&&due!==date&&r.priority!=='urgent')continue;
+    items.push({type:'consultations',id:r.id,name:r.name,priority:r.priority||'normal',dueDate:due,rank:isDue?1:3,description:isDue?'Follow-up due':'Follow-up scheduled today',missing:[]});
+  }
+  for(const r of workspace.tasks||[]) {
+    if(r.archived||r.dueDate>date||(r.recurrence==='daily'?r.doneOn===date:!!r.doneOn))continue;
+    const due=r.recurrence==='daily'?date:r.dueDate;
+    items.push({type:'tasks',id:r.id,name:r.name,priority:r.priority||'normal',dueDate:due,rank:due<date?0:r.time<=time?1:2,description:due<date?'Task overdue':`Today at ${r.time}`,missing:[]});
+  }
+  return items.sort((a,b)=>a.rank-b.rank||priorityWeight[a.priority]-priorityWeight[b.priority]||a.dueDate.localeCompare(b.dueDate)||a.name.localeCompare(b.name));
 }

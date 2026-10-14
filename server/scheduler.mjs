@@ -3,7 +3,7 @@ import { pushConfigured,sendWebPush } from './push.mjs';
 
 function consultationMessage(r,date) {
   const days=daysBetween(r.consultationDate,date);
-  return `Maw‘id • Follow up with ${r.name}\nConsultation: ${r.consultationDate} (${days} day${days===1?'':'s'} ago).\nRecommended: ${r.destination||'destination to be decided'}.\n${r.notes||'Ask whether the client wants to move forward.'}`;
+  return `Maw‘id • Follow up with ${r.name}\nConsultation: ${r.consultationDate} (${days} day${days===1?'':'s'} ago).\nRecommended: ${r.destination||'destination to be decided'}.\nAsk whether the client wants to move forward.`;
 }
 export function scheduledJobs(row,now) {
   const r={...JSON.parse(row.payload),id:row.id,ownerId:row.owner_id};const {date,time}=localParts(now);
@@ -20,12 +20,14 @@ export function scheduledJobs(row,now) {
   if(row.type==='tasks') {
     const due=r.recurrence==='daily'?r.dueDate<=date && r.time<=time && r.doneOn!==date : !r.doneOn && `${r.dueDate}T${r.time}`<=`${date}T${time}`;
     if(!due)return [];
-    return [{key:`${r.id}:task:${r.recurrence==='daily'?date:r.dueDate}:${r.time}`,title:`Task · ${r.name}`,message:`Maw‘id • ${r.name}\n${r.recurrence==='daily'?'Everyday task':`One-off task due ${r.dueDate}`} at ${r.time}, Cairo time.\n${r.notes||'Open your workspace and mark it complete when done.'}`}];
+    return [{key:`${r.id}:task:${r.recurrence==='daily'?date:r.dueDate}:${r.time}`,title:`Task · ${r.name}`,message:`Maw‘id • ${r.name}\n${r.recurrence==='daily'?'Everyday task':`One-off task due ${r.dueDate}`} at ${r.time}, Cairo time.\nOpen your workspace and mark it complete when done.`}];
   }
   return [];
 }
 export function stillRelevant(job,row,now) {
   if(!row || row.owner_id!==job.owner_id)return false;
+  if(row.user_status&&row.user_status!=='active')return false;
+  if(row.must_change_password)return false;
   const r=JSON.parse(row.payload);const {date,time}=localParts(now);
   if(r.archived)return false;
   if(row.type==='cases') {
@@ -41,13 +43,16 @@ export function stillRelevant(job,row,now) {
   return false;
 }
 export async function runReminders(env,now=new Date(),send=fetch) {
-  if(!env.DB || !pushConfigured(env))return {configured:false};
+  if(!env.DB)return {configured:false};
   const {date,time}=localParts(now),instant=now.toISOString(),epoch=now.getTime();
+  // Authentication state must expire even before phone push is configured.
+  if(time==='03:00')await env.DB.batch([env.DB.prepare('DELETE FROM sessions WHERE expires_at<?').bind(epoch),env.DB.prepare('DELETE FROM login_limits WHERE expires_at<?').bind(epoch),env.DB.prepare("DELETE FROM deliveries WHERE created_at<? AND status IN ('sent','cancelled','failed')").bind(new Date(epoch-90*86400000).toISOString())]);
+  if(!pushConfigured(env))return {configured:false};
   const slot=time>='15:00'?'15:00':time>='10:30'?'10:30':null;
   const slotInstant=slot?`${date}T${slot}`:'',scanMark=`${date}T${time}`;
   // Already-scanned cases wait for the next daily slot, so a large set of
   // unchanged cases does not repeatedly occupy the free plan's query budget.
-  const {results:rows}=await env.DB.prepare("SELECT * FROM records WHERE active=1 AND ((type='consultations' AND next_due<=?) OR (type='cases' AND start_date<=? AND ?!='' AND (last_scan IS NULL OR last_scan<?)) OR (type='tasks' AND start_date<=? AND ((json_extract(payload,'$.recurrence')='daily' AND json_extract(payload,'$.time')<=? AND COALESCE(json_extract(payload,'$.doneOn'),'')!=? AND (last_scan IS NULL OR substr(last_scan,1,10)!=?)) OR (json_extract(payload,'$.recurrence')='once' AND (start_date<? OR json_extract(payload,'$.time')<=?) AND last_scan IS NULL)))) ORDER BY last_scan ASC LIMIT 6").bind(instant,date,slotInstant,slotInstant,date,time,date,date,date,time).all();
+  const {results:rows}=await env.DB.prepare("SELECT * FROM records WHERE active=1 AND owner_id IN (SELECT id FROM users WHERE status='active' AND must_change_password=0) AND ((type='consultations' AND next_due<=?) OR (type='cases' AND start_date<=? AND ?!='' AND (last_scan IS NULL OR last_scan<?)) OR (type='tasks' AND start_date<=? AND ((json_extract(payload,'$.recurrence')='daily' AND json_extract(payload,'$.time')<=? AND COALESCE(json_extract(payload,'$.doneOn'),'')!=? AND (last_scan IS NULL OR substr(last_scan,1,10)!=?)) OR (json_extract(payload,'$.recurrence')='once' AND (start_date<? OR json_extract(payload,'$.time')<=?) AND last_scan IS NULL)))) ORDER BY last_scan ASC LIMIT 6").bind(instant,date,slotInstant,slotInstant,date,time,date,date,date,time).all();
   // One batch transaction per record prevents a follow-up from advancing without
   // also recording its durable notification. Version predicates handle races.
   for(const row of rows) {
@@ -62,7 +67,7 @@ export async function runReminders(env,now=new Date(),send=fetch) {
   for(const job of queue) {
     const lease=crypto.randomUUID();const claimed=await env.DB.prepare("UPDATE deliveries SET status='sending',lease_token=?,lease_until=?,attempts=attempts+1 WHERE id=? AND attempts<5 AND ((status IN ('pending','failed') AND available_at<=?) OR (status='sending' AND lease_until<?))").bind(lease,epoch+300000,job.id,epoch,epoch).run();
     if(!claimed.meta.changes)continue;
-    const row=await env.DB.prepare('SELECT * FROM records WHERE id=?').bind(job.record_id).first();
+    const row=await env.DB.prepare('SELECT r.*,u.status AS user_status,u.must_change_password,u.notification_preview FROM records r JOIN users u ON u.id=r.owner_id WHERE r.id=?').bind(job.record_id).first();
     if(!stillRelevant(job,row,now)) {await env.DB.prepare("UPDATE deliveries SET status='cancelled',error='Reminder superseded or work completed' WHERE id=? AND lease_token=?").bind(job.id,lease).run();continue;}
     let error='';const r=JSON.parse(row.payload);let message=job.message;
     if(row.type==='cases')message=caseMessage({...r,id:row.id},date);
@@ -76,7 +81,7 @@ export async function runReminders(env,now=new Date(),send=fetch) {
     }
     for(const sub of subscriptions) {
       try {
-        const response=await sendWebPush(env,JSON.parse(sub.subscription),job.title,message,job.dedup_key,send);
+        const response=await sendWebPush(env,JSON.parse(sub.subscription),row.notification_preview?job.title:'Reminder due',row.notification_preview?message:'Open your Maw‘id workspace to review an assigned reminder.',job.dedup_key,send);
         if(response.status===404||response.status===410) {await env.DB.prepare('DELETE FROM push_subscriptions WHERE id=?').bind(sub.id).run();error='Notification subscription expired; enable notifications again';}
         else if(!response.ok)error=response.status===429?'Push service rate limit; will retry':'Push service unavailable; will retry';
         else await env.DB.prepare('INSERT OR IGNORE INTO push_receipts(delivery_id,subscription_id,accepted_at) VALUES (?,?,?)').bind(job.id,sub.id,instant).run();
@@ -85,6 +90,5 @@ export async function runReminders(env,now=new Date(),send=fetch) {
     if(error) {failed++;await env.DB.prepare("UPDATE deliveries SET status='failed',error=?,available_at=?,message=?,lease_until=NULL WHERE id=? AND lease_token=?").bind(error,epoch+Math.min(3600000,900000*2**job.attempts),message,job.id,lease).run();}
     else {sent++;await env.DB.prepare("UPDATE deliveries SET status='sent',error=NULL,sent_at=?,message=?,lease_until=NULL WHERE id=? AND lease_token=?").bind(instant,message,job.id,lease).run();}
   }
-  if(localParts(now).time==='03:00') await env.DB.batch([env.DB.prepare('DELETE FROM sessions WHERE expires_at<?').bind(epoch),env.DB.prepare('DELETE FROM login_limits WHERE expires_at<?').bind(epoch),env.DB.prepare("DELETE FROM deliveries WHERE created_at<? AND status IN ('sent','cancelled')").bind(new Date(epoch-90*86400000).toISOString())]);
   return {configured:true,sent,failed};
 }
