@@ -2,6 +2,12 @@
 
 **A little ahead, always.** A light, calm reminder workspace for company consultations, visa preparation, everyday tasks, and exceptional tasks. Built with ivory, sage, and restrained terracotta. The existing MG company logo is preserved; the new bell/check mark identifies the reminder app.
 
+## Current production deployment
+
+Live app: https://mawid-reminders.mgvisa-mawid.workers.dev
+
+The production environment uses Cloudflare Workers, D1 and a five-minute reminder scheduler. Production is selected with `--env production`; `npm run deploy` and `npm run db:remote` include it. The default environment preserves the existing local development database. Nineteen accounts and 501 cases were transferred privately; real client data, source spreadsheets and credentials are excluded from this repository. Staff must sign in again and enable notifications on each device. A real-phone delivery check remains necessary.
+
 ## What is ready
 
 - An interactive, responsive preview that starts with no clients, consultations, or tasks. Consultant and Process workspaces can be explored without signing in. Preview changes stay in the browser and do not send messages. The static preview opens on the login screen; real signup/login require the local or deployed Worker backend.

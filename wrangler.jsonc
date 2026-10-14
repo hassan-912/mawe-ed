@@ -3,7 +3,38 @@
   "name": "mawid-reminders",
   "main": "server/worker.mjs",
   "compatibility_date": "2026-10-14",
-  "assets": { "directory": "./dist", "binding": "ASSETS", "run_worker_first": true },
-  "d1_databases": [{ "binding": "DB", "database_name": "mawid", "database_id": "REPLACE_WITH_YOUR_D1_DATABASE_ID", "migrations_dir": "server/migrations" }],
-  "triggers": { "crons": ["*/5 * * * *"] }
+  "assets": {
+    "directory": "./dist",
+    "binding": "ASSETS",
+    "run_worker_first": true
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "mawid",
+      "database_id": "REPLACE_WITH_YOUR_D1_DATABASE_ID",
+      "migrations_dir": "server/migrations"
+    }
+  ],
+  "triggers": {
+    "crons": [
+      "*/5 * * * *"
+    ]
+  },
+  "account_id": "72cf0650bcb74d51a951904178a16d53",
+  "env": {
+    "production": {
+      "name": "mawid-reminders",
+      "d1_databases": [
+        {
+          "binding": "DB",
+          "database_name": "mawid",
+          "database_id": "bca447af-9578-4b7b-83c8-5583d406a915",
+          "migrations_dir": "server/migrations"
+        }
+      ],
+      "workers_dev": true,
+      "preview_urls": false
+    }
+  }
 }
