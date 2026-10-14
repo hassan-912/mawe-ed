@@ -1,0 +1,7 @@
+node_modules/
+.wrangler/
+.dev.vars
+push-secrets.json
+*.log
+bootstrap-manager.sql
+*.tar.gz

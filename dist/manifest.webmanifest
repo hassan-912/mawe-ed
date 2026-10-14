@@ -1,0 +1,12 @@
+{
+  "id": "/",
+  "name": "Maw‘id — Company reminders",
+  "short_name": "Maw‘id",
+  "description": "Client follow-ups, visa checklists, and everyday reminders.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#f7f7f2",
+  "theme_color": "#476553",
+  "icons": [{"src":"/assets/icon-192.png","sizes":"192x192","type":"image/png","purpose":"any maskable"},{"src":"/assets/icon-512.png","sizes":"512x512","type":"image/png","purpose":"any maskable"}]
+}
