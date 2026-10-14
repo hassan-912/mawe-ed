@@ -26,8 +26,8 @@ export async function saveSubscription(DB,userId,input,now=new Date(),authVersio
   return id;
 }
 export async function sendWebPush(env,subscription,title,message,key,send=fetch,ttl=3600) {
-  let payload=JSON.stringify({title:`Maw‘id · ${title}`,body:message,tag:key,url:'/?view=notifications'});
-  while(new TextEncoder().encode(payload).length>3500){message=message.slice(0,Math.floor(message.length*.8))+'…';payload=JSON.stringify({title:`Maw‘id · ${title}`,body:message,tag:key,url:'/?view=notifications'});}
+  let payload=JSON.stringify({title:`Mawid · ${title}`,body:message,tag:key,url:'/?view=notifications'});
+  while(new TextEncoder().encode(payload).length>3500){message=message.slice(0,Math.floor(message.length*.8))+'…';payload=JSON.stringify({title:`Mawid · ${title}`,body:message,tag:key,url:'/?view=notifications'});}
   const request=await buildPushPayload({data:payload,options:{ttl}},{...subscription},{subject:env.VAPID_SUBJECT,publicKey:env.VAPID_PUBLIC_KEY,privateKey:env.VAPID_PRIVATE_KEY});
   return send(subscription.endpoint,{...request,redirect:'error',signal:AbortSignal.timeout(10000)});
 }

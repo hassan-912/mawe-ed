@@ -1,3 +1,4 @@
+import { displayDate } from '../dist/engine.js';
 export function activityStatement(DB,user,action,summary,recordId=null,guard=null) {
   const values=[crypto.randomUUID(),user.id,user.name,recordId,action,summary,new Date().toISOString()];
   if(guard) {
@@ -10,10 +11,12 @@ export function changeSummary(type,before,after,input) {
   const labels=[];
   if(!before.id)return `${type==='cases'?'Client case':type==='consultations'?'Consultation':'Task'} created`;
   if(input.checks){const completed=Object.keys(after.checks||{}).filter(k=>after.checks[k]&&!before.checks?.[k]),reopened=Object.keys(after.checks||{}).filter(k=>!after.checks[k]&&before.checks?.[k]);if(completed.length)labels.push(`Completed: ${completed.join(', ')}`);if(reopened.length)labels.push(`Reopened: ${reopened.join(', ')}`);}
-  if(before.appointment!==after.appointment)labels.push(`Appointment moved to ${after.appointment}`);
+  if(type==='consultations'&&after.lastContact!==before.lastContact&&after.lastContact)labels.push('Follow-up recorded');
+  if(before.appointment!==after.appointment)labels.push(`Appointment moved to ${displayDate(after.appointment)}`);
   if(before.ownerId!==after.ownerId)labels.push('Assignment changed');
   if(before.archived!==after.archived)labels.push(after.archived?'Archived':'Restored');
   if(before.status!==after.status)labels.push(`Status changed to ${after.status}`);
+  if(before.lifecycle!==after.lifecycle)labels.push(`Case status changed to ${after.lifecycle}`);
   if(before.doneOn!==after.doneOn)labels.push(after.doneOn?'Task completed':'Task reopened');
   if((before.priority||'normal')!==after.priority)labels.push(`Priority changed to ${after.priority}`);
   return labels.length?labels.join(' · '):'Details updated';

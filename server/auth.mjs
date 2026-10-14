@@ -33,6 +33,7 @@ export function validatePerson(input) {
   if(typeof input.name!=='string'||!input.name.trim()||input.name.length>160)throw new Error('Enter a valid staff name.');
   const email=normalizeEmail(input.email);
   if(!['manager','employee'].includes(input.role))throw new Error('Choose a valid staff role.');
+  if(input.staffType!=null&&!['process','consultant'].includes(input.staffType))throw new Error('Choose Consultant or Process.');
   validatePassword(input.password);
   return {...input,name:input.name.trim(),email};
 }
@@ -42,10 +43,17 @@ export function normalizeEmail(value) {
   if(email.length>254||!/^[-a-z0-9.!#$%&'*+/=?^_`{|}~]{1,64}@[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/.test(email))throw new Error('Enter a valid email.');
   return email;
 }
+export function normalizeLogin(value) {
+  if(typeof value!=='string')throw new Error('Enter an email or username.');
+  const identifier=value.trim().toLowerCase().replace(/\s+/g,' ');
+  if(identifier.includes('@'))return normalizeEmail(identifier);
+  if(!/^[a-z0-9][a-z0-9 ._-]{2,63}$/.test(identifier))throw new Error('Enter a valid email or username.');
+  return identifier;
+}
 export function validatePassword(value) {
   if(typeof value!=='string'||value.length<15||value.length>128||/^(.)\1+$/su.test(value)||['passwordpassword','123456789012345','qwertyuiopasdfgh'].includes(value.toLowerCase()))throw new Error('Use a unique password with 15–128 characters.');
 }
-export function publicUser(row) { return {id:row.id,name:row.name,email:row.email,role:row.role,status:row.status,mustChangePassword:!!row.must_change_password,notificationPreview:!!row.notification_preview}; }
+export function publicUser(row) { return {id:row.id,name:row.name,email:row.email,username:row.username||null,role:row.role,staffType:row.role==='manager'?'admin':row.staff_type||'process',status:row.status,mustChangePassword:!!row.must_change_password,notificationPreview:!!row.notification_preview,photoUrl:row.profile_photo_version?`/api/profile/photo?v=${row.profile_photo_version}`:null}; }
 export const sessionCookie = (token, secure = true) => `${secure?'__Host-':''}mawid=${token}; Path=/; HttpOnly; SameSite=Strict; ${secure?'Secure; ':''}Max-Age=604800`;
 export const logoutCookie = (secure = true) => `${secure?'__Host-':''}mawid=; Path=/; HttpOnly; SameSite=Strict; ${secure?'Secure; ':''}Max-Age=0`;
 export async function authenticate(request,env) {

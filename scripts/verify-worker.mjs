@@ -12,7 +12,7 @@ const execute=file=>execFileSync(process.execPath,[wrangler,'d1','execute','mawi
 const request=async(endpoint,method='GET',input,cookie)=>fetch(`${origin}/api/${endpoint}`,{method,headers:{'Content-Type':'application/json',...(method!=='GET'?{Origin:origin}:{}),...(cookie?{Cookie:cookie}:{})},...(input?{body:JSON.stringify(input)}:{})});
 try {
   execFileSync(process.execPath,[wrangler,'d1','migrations','apply','mawid','--local'],{stdio:'pipe'});
-  const pepper=(await readFile('.dev.vars','utf8')).match(/^AUTH_PEPPER=([a-f0-9]{64})\r?$/mi)?.[1];if(!pepper)throw new Error('Run npm run auth:key before local verification.');
+  const pepper=process.env.MAWID_VERIFY_PEPPER||(await readFile('.dev.vars','utf8').catch(()=>'' )).match(/^AUTH_PEPPER=([a-f0-9]{64})\r?$/mi)?.[1];if(!/^[a-f0-9]{64}$/i.test(pepper||''))throw new Error('Run npm run auth:key or set MAWID_VERIFY_PEPPER to the local Worker test key before verification.');
   const sql=path.join(scratch,'seed.sql'),hash=await hashPassword('Local-test-password-123',undefined,pepper);
   await writeFile(sql,`DELETE FROM activity WHERE actor_id='local-verification' OR (actor_id IS NULL AND actor_name='Local Verification'); DELETE FROM records WHERE owner_id='local-verification'; DELETE FROM users WHERE id='local-verification'; INSERT INTO users(id,name,email,role,password_hash,created_at) VALUES ('local-verification','Local Verification','local-verification@test.invalid','manager','${hash}','2026-10-14T00:00:00Z');`);
   execute(sql);

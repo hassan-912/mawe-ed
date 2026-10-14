@@ -1,11 +1,19 @@
 export const ZONE = 'Africa/Cairo';
 export const CHECKLISTS = Object.freeze({
-  schengen_tourism: ['Hotel', 'Flight', 'Application', 'Aman', 'Travel plan', 'Motivation letter', 'Translation'],
-  schengen_business: ['Hotel', 'Flight', 'Application', 'Aman', 'Travel plan', 'Motivation letter', 'Translation', 'Conference'],
-  usa: ['Hotel', 'DS-160 application', 'US Travel Docs'],
-  canada: [], uk: []
+  schengen_tourism: ['Hotel', 'Flight', 'Application', 'Aman', 'Travel plan', 'Motivation letter', 'Translation', 'Submitted to review'],
+  schengen_business: ['Hotel', 'Flight', 'Application', 'Aman', 'Travel plan', 'Motivation letter', 'Translation', 'Conference', 'Submitted to review'],
+  usa: ['Hotel', 'DS-160 application', 'US Travel Docs', 'Submitted to review'],
+  canada: [], uk: [], other: []
 });
-export const DESTINATIONS = { schengen_tourism: 'Schengen', schengen_business: 'Schengen', usa: 'USA', canada: 'Canada', uk: 'UK' };
+export const DESTINATIONS = { schengen_tourism: 'Schengen', schengen_business: 'Schengen', usa: 'USA', canada: 'Canada', uk: 'UK',other:'Other destinations' };
+export const canConsult = user => user?.role === 'manager' || (user?.staffType || user?.staff_type) === 'consultant';
+export const canProcess = user => user?.role === 'manager' || (user?.staffType || user?.staff_type || 'process') === 'process';
+export const staffLabel = user => user?.role === 'manager' ? 'Administrator' : canConsult(user) ? 'Consultant' : 'Process';
+const WORKFLOW_STEPS = {
+  schengen_tourism: ['Translation', 'Hotel', 'Flight', 'Aman', 'Travel plan', 'Motivation letter', 'Application', 'Submitted to review'],
+  schengen_business: ['Translation', 'Conference', 'Hotel', 'Flight', 'Aman', 'Travel plan', 'Motivation letter', 'Application', 'Submitted to review'],
+  usa: ['Hotel', 'DS-160 application', 'US Travel Docs', 'Submitted to review']
+};
 export function localParts(now = new Date(), zone = ZONE) {
   const p = Object.fromEntries(new Intl.DateTimeFormat('en-GB', { timeZone: zone, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).formatToParts(now).filter(x => x.type !== 'literal').map(x => [x.type, x.value]));
   return { date: `${p.year}-${p.month}-${p.day}`, time: `${p.hour}:${p.minute}` };
@@ -14,17 +22,36 @@ export const today = () => localParts().date;
 export function validDate(value) {
   return typeof value === 'string' && /^(19|20|21)\d{2}-\d{2}-\d{2}$/.test(value) && !Number.isNaN(Date.parse(value)) && new Date(`${value}T12:00:00Z`).toISOString().slice(0, 10) === value;
 }
+export function displayDate(value) {
+  if(!validDate(value))throw new Error('Enter a valid date.');
+  const [year,month,day]=value.split('-');return `${day}/${month}/${year}`;
+}
+export function parseDisplayDate(value) {
+  const match=typeof value==='string'&&value.trim().match(/^([0-9]{2})\/([0-9]{2})\/([0-9]{4})$/);
+  if(!match)throw new Error('Enter the date as DD/MM/YYYY.');
+  const date=`${match[3]}-${match[2]}-${match[1]}`;
+  if(!validDate(date))throw new Error('Enter a valid date as DD/MM/YYYY.');
+  return date;
+}
 export function addDays(date, amount) {
   if (!validDate(date)) throw new Error('Enter a valid date.');
   const d = new Date(`${date}T12:00:00Z`); d.setUTCDate(d.getUTCDate() + amount); return d.toISOString().slice(0, 10);
 }
 export const daysBetween = (from, to) => Math.round((Date.parse(`${to}T12:00:00Z`) - Date.parse(`${from}T12:00:00Z`)) / 86400000);
-export const readyBy = record => addDays(record.appointment, -4);
-export const reminderStartFor = record => record.reminderStart || addDays(readyBy(record), -4);
+export const readyBy = record => record.appointment;
+export const reminderStartFor = record => validDate(record.appointment)?addDays(record.appointment, -7):null;
 export const pendingItems = record => (CHECKLISTS[record.kind] || []).filter(item => !record.checks?.[item]);
-export const isPlaceholder = record => ['canada', 'uk'].includes(record.kind);
+export const completedItems = record => (CHECKLISTS[record.kind] || []).filter(item => record.checks?.[item]);
+export const nextCaseStep = record => (WORKFLOW_STEPS[record.kind] || []).find(item => !record.checks?.[item]) || null;
+export const isPlaceholder = record => ['canada', 'uk','other'].includes(record.kind);
+export const isCaseActive = record => !record.archived&&(!record.lifecycle||record.lifecycle==='active');
+export const caseRemindersEnabled = record => isCaseActive(record)&&!record.needsAssignment&&!isPlaceholder(record)&&validDate(record.appointment)&&pendingItems(record).length>0;
 export function caseStatus(record, date = today()) {
   if (record.archived) return 'Archived';
+  if(record.lifecycle==='completed')return 'Completed';
+  if(record.lifecycle==='cancelled')return 'Cancelled';
+  if(record.lifecycle==='on_hold')return 'On hold';
+  if(!validDate(record.appointment))return 'Appointment needed';
   if (isPlaceholder(record)) return 'Under processing';
   if (!pendingItems(record).length) return 'Ready';
   const days = daysBetween(date, readyBy(record));
@@ -50,18 +77,19 @@ export function nextFollowup(record, now = new Date()) {
   return new Date(base + Math.max(1, Math.floor((now.getTime() - base) / step) + 1) * step).toISOString();
 }
 export function employeeReminders(record, now = new Date()) {
-  if (record.archived || isPlaceholder(record) || !pendingItems(record).length) return [];
+  if (!caseRemindersEnabled(record)) return [];
   const { date, time } = localParts(now);
   const start = reminderStartFor(record);
   if (date < start) return [];
   return ['10:30', '15:00'].filter(slot => slot <= time).map(slot => ({ key: `${record.id}:${date}:${slot}`, slot, date }));
 }
 export function caseMessage(record, date = today()) {
-  const remaining = daysBetween(date, readyBy(record));
-  const timing = remaining > 0 ? `${remaining} day${remaining === 1 ? '' : 's'} left until the preparation deadline` : remaining === 0 ? 'Preparation is due today' : `Preparation is ${Math.abs(remaining)} day${remaining === -1 ? '' : 's'} overdue`;
+  if(!validDate(record.appointment))return `Mawid • ${record.name}\nAppointment date not set. Preparation reminders start after an exact appointment is recorded.\n${isPlaceholder(record)?'Checklist is not defined for this destination yet.':`Still needed: ${pendingItems(record).join(', ')}.`}`;
   const embassyDays = daysBetween(date, record.appointment);
-  const embassyTiming = embassyDays >= 0 ? `${embassyDays} day${embassyDays === 1 ? '' : 's'} left` : `${Math.abs(embassyDays)} day${embassyDays === -1 ? '' : 's'} ago`;
-  return `Maw‘id • ${record.name}\nStill needed: ${pendingItems(record).join(', ')}.\n${timing} (${readyBy(record)}).\nEmbassy appointment: ${record.appointment} (${embassyTiming}).`;
+  const timing = embassyDays > 0 ? `${embassyDays} day${embassyDays === 1 ? '' : 's'} left until the embassy appointment` : embassyDays === 0 ? 'Embassy appointment is today' : `Embassy appointment was ${Math.abs(embassyDays)} day${embassyDays === -1 ? '' : 's'} ago`;
+  if (isPlaceholder(record)) return `Mawid • ${record.name}\n${timing} (${displayDate(record.appointment)}).\nChecklist is not defined for this destination yet.`;
+  const completed = completedItems(record), pending = pendingItems(record), next = nextCaseStep(record);
+  return `Mawid • ${record.name}\n${timing} (${displayDate(record.appointment)}).\n${completed.length ? `Completed: ${completed.join(', ')}.` : 'No preparation steps completed yet.'}\n${pending.length ? `Still needed: ${pending.join(', ')}.\nNext step: ${next}.` : 'All preparation steps are complete.'}`;
 }
 export function validateRecord(type, input, existing = {}) {
   const r = { ...existing, ...input };
@@ -73,9 +101,11 @@ export function validateRecord(type, input, existing = {}) {
   if (r.phone != null && (typeof r.phone !== 'string' || r.phone.length > 40)) throw new Error('Enter a valid phone number.');
   if (r.archived != null && typeof r.archived !== 'boolean') throw new Error('Invalid archive state.');
   if (type === 'cases') {
-    if (!Object.hasOwn(CHECKLISTS,r.kind) || !validDate(r.appointment)) throw new Error('Choose a destination and valid appointment date.');
-    if (r.reminderStart != null && typeof r.reminderStart !== 'string') throw new Error('Enter a valid reminder start.');
-    if (r.reminderStart && (!validDate(r.reminderStart) || r.reminderStart > readyBy(r))) throw new Error('Reminders must start on or before the preparation deadline.');
+    if (!Object.hasOwn(CHECKLISTS,r.kind) || (!validDate(r.appointment)&&!(existing.sourceImport&&!r.appointment))) throw new Error('Choose a destination and valid appointment date.');
+    r.lifecycle??='active';
+    if(!['active','completed','on_hold','cancelled'].includes(r.lifecycle))throw new Error('Choose a valid case status.');
+    if (input.reminderStart) throw new Error('Case reminders automatically start seven days before the embassy appointment.');
+    delete r.reminderStart;
     if (r.checks != null && (typeof r.checks !== 'object' || Array.isArray(r.checks))) throw new Error('Invalid checklist.');
     const allowed = CHECKLISTS[r.kind];
     r.checks = Object.fromEntries(allowed.map(item => { const value = r.checks?.[item] ?? false; if (typeof value !== 'boolean') throw new Error('Checklist values must be true or false.'); return [item, value]; }));
@@ -98,7 +128,7 @@ export function buildPriorities(workspace,now=new Date()) {
   const {date,time}=localParts(now),items=[];
   const priorityWeight={urgent:0,high:1,normal:2};
   for(const r of workspace.cases||[]) {
-    if(r.archived||isPlaceholder(r)||!pendingItems(r).length)continue;
+    if(!caseRemindersEnabled(r))continue;
     const due=readyBy(r),days=daysBetween(date,due);
     if(days>7&&r.priority!=='urgent')continue;
     items.push({type:'cases',id:r.id,name:r.name,priority:r.priority||'normal',dueDate:due,rank:days<0?0:days===0?1:3,description:days<0?`Preparation ${-days} day(s) overdue`:days===0?'Preparation due today':`Prepare within ${days} day(s)`,missing:pendingItems(r)});

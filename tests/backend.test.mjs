@@ -41,7 +41,7 @@ test('private notification previews hide client identifiers and free-form notes 
     insert(env,'private','tasks',{name:'Sensitive client label',ownerId:'employee',dueDate:'2026-10-14',time:'10:30',recurrence:'once',notes:'Secret free-form notes'});
     env.DB.raw.prepare("UPDATE users SET notification_preview=0 WHERE id='employee'").run();
     const sent=[];await runReminders(env,new Date('2026-10-14T07:30:00Z'),async(url,options)=>{sent.push(await env.decrypt(options.body));return new Response(null,{status:201});});
-    assert.equal(sent.length,1);assert.equal(sent[0].title,'Maw‘id · Reminder due');assert.doesNotMatch(JSON.stringify(sent[0]),/Sensitive client|Secret free-form/);
+    assert.equal(sent.length,1);assert.equal(sent[0].title,'Mawid · Reminder due');assert.doesNotMatch(JSON.stringify(sent[0]),/Sensitive client|Secret free-form/);
     env.DB.raw.prepare("UPDATE users SET notification_preview=1 WHERE id='employee'").run();
     insert(env,'visible','tasks',{name:'Visible task',ownerId:'employee',dueDate:'2026-10-14',time:'10:30',recurrence:'once',notes:'Secret free-form notes'});
     await runReminders(env,new Date('2026-10-14T07:30:00Z'),async(url,options)=>{sent.push(await env.decrypt(options.body));return new Response(null,{status:201});});

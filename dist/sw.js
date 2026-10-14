@@ -3,7 +3,7 @@ self.addEventListener('activate',event=>event.waitUntil(self.clients.claim()));
 // Push wakes this worker even when the website tab is closed. It does not use
 // page timers and does not cache authenticated company records.
 self.addEventListener('push',event=>{
-  let payload={title:'Maw‘id',body:'A reminder needs your attention.',tag:'mawid',url:'/?view=notifications'};
+  let payload={title:'Mawid',body:'A reminder needs your attention.',tag:'mawid',url:'/?view=notifications'};
   try{if(event.data)payload={...payload,...event.data.json()};}catch{}
   event.waitUntil(self.registration.showNotification(payload.title,{body:payload.body,icon:'/assets/icon-192.png',badge:'/assets/icon-192.png',tag:payload.tag,renotify:false,data:{url:payload.url}}));
 });

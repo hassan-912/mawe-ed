@@ -1,5 +1,5 @@
 import { HttpError,json,readBody,onlyFields,validated,rateLimit,requestIp,needAuthConfiguration,needManager } from './http.mjs';
-import { publicUser,normalizeEmail,validatePerson,validatePassword,verifyPassword,hashPassword,upgradeLegacyHash,randomToken,sha256,cookieToken,deviceName,sessionCookie,logoutCookie } from './auth.mjs';
+import { publicUser,normalizeLogin,validatePerson,validatePassword,verifyPassword,hashPassword,upgradeLegacyHash,randomToken,sha256,cookieToken,deviceName,sessionCookie,logoutCookie } from './auth.mjs';
 import { activityStatement } from './activity.mjs';
 
 export function sessionStatement(DB,account,tokenHash,request,version=account.auth_version) {
@@ -25,7 +25,7 @@ export async function publicAccountRoute(request,env) {
     needAuthConfiguration(env);
     if(env.REGISTRATION_OPEN==='false')throw new HttpError('New registrations are currently closed.',403);
     await rateLimit(env.DB,`registration-ip:${requestIp(request)}`,5,3600000);
-    const raw=await readBody(request);onlyFields(raw,['name','email','password']);
+    const raw=await readBody(request);onlyFields(raw,['name','email','password','staffType']);
     const person=validated(()=>validatePerson({...raw,role:'employee'}));
     const pending=await env.DB.prepare("SELECT COUNT(*) AS count FROM users WHERE status='pending'").first();
     if(pending.count>=100)throw new HttpError('Registrations are awaiting manager review. Please try again later.',503);
@@ -34,8 +34,8 @@ export async function publicAccountRoute(request,env) {
     // email identifiers already have an account. No public role selection.
     const hash=await hashPassword(person.password,undefined,env.AUTH_PEPPER);
     await env.DB.batch([
-      env.DB.prepare("INSERT OR IGNORE INTO users(id,name,email,role,password_hash,created_at,status) SELECT ?,?,?,'employee',?,?,'pending' WHERE (SELECT COUNT(*) FROM users WHERE status='pending')<100").bind(id,person.name,person.email,hash,now),
-      env.DB.prepare("INSERT INTO activity(id,actor_id,actor_name,action,summary,created_at) SELECT ?,id,name,'account.registered','Employee account requested',? FROM users WHERE id=?").bind(crypto.randomUUID(),now,id)
+      env.DB.prepare("INSERT OR IGNORE INTO users(id,name,email,role,staff_type,password_hash,created_at,status) SELECT ?,?,?,'employee',?,?,?,'pending' WHERE (SELECT COUNT(*) FROM users WHERE status='pending')<100").bind(id,person.name,person.email,person.staffType||'process',hash,now),
+      env.DB.prepare("INSERT INTO activity(id,actor_id,actor_name,action,summary,created_at) SELECT ?,id,name,'account.registered','Staff account requested',? FROM users WHERE id=?").bind(crypto.randomUUID(),now,id)
     ]);
     return json({message:'If this email is available, your account is ready to sign in. Company access requires manager approval.'},201);
   }
@@ -44,10 +44,11 @@ export async function publicAccountRoute(request,env) {
     await rateLimit(env.DB,`login-ip:${requestIp(request)}`,30);
     const raw=await readBody(request);onlyFields(raw,['email','password','endpoint']);
     if(raw.endpoint!=null&&(typeof raw.endpoint!=='string'||raw.endpoint.length>2048))throw new HttpError('Invalid notification device.');
-    let email;try{email=normalizeEmail(raw.email);}catch{throw new HttpError('Email or password is incorrect.',401);}
+    let identifier;try{identifier=normalizeLogin(raw.email);}catch{throw new HttpError('Email, username, or password is incorrect.',401);}
     if(typeof raw.password!=='string'||!raw.password||raw.password.length>128)throw new HttpError('Email or password is incorrect.',401);
+    const account=await env.DB.prepare(`SELECT * FROM users WHERE ${identifier.includes('@')?'email':'username'}=?`).bind(identifier).first();
+    const email=account?.email||identifier;
     await rateLimit(env.DB,`login-email:${email}`,8);
-    const account=await env.DB.prepare('SELECT * FROM users WHERE email=?').bind(email).first();
     const dummy='pbkdf2-hmac-sha256:100000:00000000000000000000000000000000:0000000000000000000000000000000000000000000000000000000000000000';
     if(!await verifyPassword(raw.password,account?.password_hash||dummy,env.AUTH_PEPPER)||!account||account.status==='disabled')throw new HttpError('Email or password is incorrect.',401);
     const token=randomToken(),tokenHash=await sha256(token),statements=[];
@@ -136,7 +137,8 @@ export async function securityRoute(request,env,user) {
 export async function accountAdministration(request,env,user) {
   const match=new URL(request.url).pathname.match(/^\/api\/people\/([^/]+)\/(approve|disable|activate)$/);
   if(!match||request.method!=='POST')return null;
-  needManager(user);const input=await readBody(request);onlyFields(input,[]);
+  needManager(user);const input=await readBody(request);onlyFields(input,match[2]==='disable'?[]:['staffType']);
+  if(input.staffType!=null&&!['consultant','process'].includes(input.staffType))throw new HttpError('Choose Consultant or Process.');
   const person=await env.DB.prepare('SELECT * FROM users WHERE id=?').bind(match[1]).first();
   if(!person)throw new HttpError('Staff account not found.',404);
   if(person.id===user.id||person.role!=='employee')throw new HttpError('This action is available for employee accounts only.',403);
@@ -144,7 +146,12 @@ export async function accountAdministration(request,env,user) {
   if(match[2]==='approve'||match[2]==='activate') {
     const expected=match[2]==='approve'?'pending':'disabled';
     if(person.status!==expected)throw new HttpError('The account state changed. Reload and try again.',409);
-    const result=await env.DB.batch([env.DB.prepare("UPDATE users SET status='active',last_mutation_id=? WHERE id=? AND status=?").bind(mutation,person.id,expected),activityStatement(env.DB,user,match[2]==='approve'?'account.approved':'account.activated',`${match[2]==='approve'?'Employee membership approved':'Employee membership reactivated'}: ${person.name}`,null,{table:'users',id:person.id,mutation})]);
+    const staffType=input.staffType||person.staff_type;
+    if(staffType!==person.staff_type) {
+      const assigned=await env.DB.prepare("SELECT COUNT(*) AS count FROM records WHERE owner_id=? AND type!='tasks'").bind(person.id).first();
+      if(assigned.count)throw new HttpError('Reassign this staff member’s consultations and cases before changing their workflow.',409);
+    }
+    const result=await env.DB.batch([env.DB.prepare("UPDATE users SET status='active',staff_type=?,last_mutation_id=? WHERE id=? AND status=?").bind(staffType,mutation,person.id,expected),activityStatement(env.DB,user,match[2]==='approve'?'account.approved':'account.activated',`${match[2]==='approve'?'Staff membership approved':'Staff membership reactivated'}: ${person.name}; workflow: ${staffType}`,null,{table:'users',id:person.id,mutation})]);
     if(!result[0].meta.changes)throw new HttpError('The account state changed. Reload and try again.',409);
   } else {
     await env.DB.batch([

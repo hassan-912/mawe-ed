@@ -1,9 +1,9 @@
-import { localParts, reminderStartFor, pendingItems, isPlaceholder, employeeReminders, caseMessage, nextFollowup, daysBetween } from '../dist/engine.js';
+import { localParts, reminderStartFor, pendingItems, isPlaceholder, employeeReminders, caseMessage, nextFollowup, daysBetween, displayDate,caseRemindersEnabled } from '../dist/engine.js';
 import { pushConfigured,sendWebPush } from './push.mjs';
 
 function consultationMessage(r,date) {
   const days=daysBetween(r.consultationDate,date);
-  return `Maw‘id • Follow up with ${r.name}\nConsultation: ${r.consultationDate} (${days} day${days===1?'':'s'} ago).\nRecommended: ${r.destination||'destination to be decided'}.\nAsk whether the client wants to move forward.`;
+  return `Mawid • Follow up with ${r.name}\nConsultation: ${displayDate(r.consultationDate)} (${days} day${days===1?'':'s'} ago).\nRecommended: ${r.destination||'destination to be decided'}.\nAsk whether the client wants to move forward.`;
 }
 export function scheduledJobs(row,now) {
   const r={...JSON.parse(row.payload),id:row.id,ownerId:row.owner_id};const {date,time}=localParts(now);
@@ -20,7 +20,7 @@ export function scheduledJobs(row,now) {
   if(row.type==='tasks') {
     const due=r.recurrence==='daily'?r.dueDate<=date && r.time<=time && r.doneOn!==date : !r.doneOn && `${r.dueDate}T${r.time}`<=`${date}T${time}`;
     if(!due)return [];
-    return [{key:`${r.id}:task:${r.recurrence==='daily'?date:r.dueDate}:${r.time}`,title:`Task · ${r.name}`,message:`Maw‘id • ${r.name}\n${r.recurrence==='daily'?'Everyday task':`One-off task due ${r.dueDate}`} at ${r.time}, Cairo time.\nOpen your workspace and mark it complete when done.`}];
+    return [{key:`${r.id}:task:${r.recurrence==='daily'?date:r.dueDate}:${r.time}`,title:`Task · ${r.name}`,message:`Mawid • ${r.name}\n${r.recurrence==='daily'?'Everyday task':`One-off task due ${displayDate(r.dueDate)}`} at ${r.time}, Cairo time.\nOpen your workspace and mark it complete when done.`}];
   }
   return [];
 }
@@ -31,7 +31,7 @@ export function stillRelevant(job,row,now) {
   const r=JSON.parse(row.payload);const {date,time}=localParts(now);
   if(r.archived)return false;
   if(row.type==='cases') {
-    if(isPlaceholder(r)||!pendingItems(r).length||date<reminderStartFor(r))return false;
+    if(!caseRemindersEnabled(r)||date<reminderStartFor(r))return false;
     const latest=employeeReminders({...r,id:row.id},now).slice(-1)[0];
     return latest && job.dedup_key===`${row.id}:case:${latest.date}:${latest.slot}`;
   }
@@ -81,7 +81,7 @@ export async function runReminders(env,now=new Date(),send=fetch) {
     }
     for(const sub of subscriptions) {
       try {
-        const response=await sendWebPush(env,JSON.parse(sub.subscription),row.notification_preview?job.title:'Reminder due',row.notification_preview?message:'Open your Maw‘id workspace to review an assigned reminder.',job.dedup_key,send);
+        const response=await sendWebPush(env,JSON.parse(sub.subscription),row.notification_preview?job.title:'Reminder due',row.notification_preview?message:'Open your Mawid workspace to review an assigned reminder.',job.dedup_key,send);
         if(response.status===404||response.status===410) {await env.DB.prepare('DELETE FROM push_subscriptions WHERE id=?').bind(sub.id).run();error='Notification subscription expired; enable notifications again';}
         else if(!response.ok)error=response.status===429?'Push service rate limit; will retry':'Push service unavailable; will retry';
         else await env.DB.prepare('INSERT OR IGNORE INTO push_receipts(delivery_id,subscription_id,accepted_at) VALUES (?,?,?)').bind(job.id,sub.id,instant).run();

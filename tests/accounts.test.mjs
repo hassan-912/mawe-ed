@@ -6,6 +6,29 @@ import worker from '../server/worker.mjs';
 import { pushFixture } from './push-fixture.mjs';
 import { saveSubscription } from '../server/push.mjs';
 
+test('optional username login is case-insensitive, unique, and preserves email login and role checks',async()=>{
+  const env=await fixture();try {
+    env.DB.raw.prepare("UPDATE users SET username='admin-test' WHERE id='manager'").run();
+    const response=await call(env,'login','POST',{email:' ADMIN-TEST ',password:PASSWORD});assert.equal(response.status,200);
+    const cookie=response.headers.get('Set-Cookie').split(';')[0],workspace=await(await call(env,'workspace','GET',null,cookie)).json();
+    assert.equal(workspace.user.id,'manager');assert.equal(workspace.user.role,'manager');
+    assert.equal((await call(env,'login','POST',{email:'manager@test.invalid',password:PASSWORD})).status,200);
+    assert.equal((await call(env,'login','POST',{email:'admin-test',password:'incorrect'})).status,401);
+    assert.equal((await call(env,'login','POST',{email:'unknown-user',password:PASSWORD})).status,401);
+    assert.throws(()=>env.DB.raw.prepare("UPDATE users SET username='ADMIN-TEST' WHERE id='employee'").run(),/UNIQUE/);
+    assert.equal((await call(env,'register','POST',{name:'Staff',email:'staff@test.invalid',password:'short@@'})).status,400);
+  }finally{env.DB.close();}
+});
+
+test('username and email aliases share the same password-attempt limit',async()=>{
+  const env=await fixture();try {
+    env.DB.raw.prepare("UPDATE users SET username='admin-test' WHERE id='manager'").run();
+    for(let i=0;i<8;i++)assert.equal((await call(env,'login','POST',{email:i%2?'manager@test.invalid':'admin-test',password:'incorrect'})).status,401);
+    assert.equal((await call(env,'login','POST',{email:'ADMIN-TEST',password:PASSWORD})).status,429);
+    assert.equal((await call(env,'login','POST',{email:'manager@test.invalid',password:PASSWORD})).status,429);
+  }finally{env.DB.close();}
+});
+
 test('login bounds active sessions to twenty and removes expired sessions',async()=>{
   const env=await fixture();try{
     const now=Date.now();
@@ -106,9 +129,9 @@ test('peppered hashes require the correct server secret; legacy hashes upgrade a
     delete env.AUTH_PEPPER;assert.equal((await call(env,'register','POST',{name:'Nobody',email:'nobody@test.invalid',password:PASSWORD})).status,503);assert.equal((await call(env,'login','POST',{email:'employee@test.invalid',password:PASSWORD})).status,503);
   }finally{env.DB.close();}
 });
-test('anonymous rate limits run before expensive hashing and invalid emails do not create email limiter rows',async()=>{
+test('anonymous rate limits run before expensive hashing and invalid identifiers do not create account limiter rows',async()=>{
   const env=await fixture();try{
-    assert.equal((await call(env,'login','POST',{email:'not-an-email',password:PASSWORD})).status,401);assert.equal(env.DB.raw.prepare('SELECT COUNT(*) AS n FROM login_limits').get().n,1);
+    assert.equal((await call(env,'login','POST',{email:'not/a/username',password:PASSWORD})).status,401);assert.equal(env.DB.raw.prepare('SELECT COUNT(*) AS n FROM login_limits').get().n,1);
     for(let i=0;i<5;i++)await call(env,'register','POST',{name:'Invalid',email:'invalid',password:PASSWORD});assert.equal((await call(env,'register','POST',{name:'Invalid',email:'invalid',password:PASSWORD})).status,429);
     assert.equal(env.DB.raw.prepare('SELECT COUNT(*) AS n FROM users').get().n,3);
   }finally{env.DB.close();}

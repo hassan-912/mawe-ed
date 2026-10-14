@@ -1,7 +1,7 @@
 {
   "id": "/",
-  "name": "Maw‘id — Company reminders",
-  "short_name": "Maw‘id",
+  "name": "Mawid — Company reminders",
+  "short_name": "Mawid",
   "description": "Client follow-ups, visa checklists, and everyday reminders.",
   "start_url": "/",
   "scope": "/",
